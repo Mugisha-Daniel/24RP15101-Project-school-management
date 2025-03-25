@@ -1,0 +1,93 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_REGISTRY = 'your-registry'
+        BACKEND_IMAGE = '${DOCKER_REGISTRY}/school-management-backend'
+        MICROSERVICE_IMAGE = '${DOCKER_REGISTRY}/school-management-microservice'
+        KUBERNETES_NAMESPACE = 'default'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh 'npm test'
+            }
+        }
+
+        stage('Build Backend Docker Image') {
+            steps {
+                script {
+                    docker.build("${BACKEND_IMAGE}:${BUILD_NUMBER}", "-f Dockerfile .")
+                    docker.build("${BACKEND_IMAGE}:latest", "-f Dockerfile .")
+                }
+            }
+        }
+
+        stage('Build Microservice Docker Image') {
+            steps {
+                script {
+                    docker.build("${MICROSERVICE_IMAGE}:${BUILD_NUMBER}", "-f Dockerfile.microservice .")
+                    docker.build("${MICROSERVICE_IMAGE}:latest", "-f Dockerfile.microservice .")
+                }
+            }
+        }
+
+        stage('Push Docker Images') {
+            steps {
+                script {
+                    docker.withRegistry('https://${DOCKER_REGISTRY}', 'docker-credentials') {
+                        docker.image("${BACKEND_IMAGE}:${BUILD_NUMBER}").push()
+                        docker.image("${BACKEND_IMAGE}:latest").push()
+                        docker.image("${MICROSERVICE_IMAGE}:${BUILD_NUMBER}").push()
+                        docker.image("${MICROSERVICE_IMAGE}:latest").push()
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    withKubeConfig([credentialsId: 'kubernetes-credentials']) {
+                        sh "kubectl apply -f k8s/backend-deployment.yaml -n ${KUBERNETES_NAMESPACE}"
+                        sh "kubectl apply -f k8s/microservice-deployment.yaml -n ${KUBERNETES_NAMESPACE}"
+                        sh "kubectl apply -f k8s/nginx-ingress.yaml -n ${KUBERNETES_NAMESPACE}"
+                    }
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    withKubeConfig([credentialsId: 'kubernetes-credentials']) {
+                        sh "kubectl rollout status deployment/school-management-backend -n ${KUBERNETES_NAMESPACE}"
+                        sh "kubectl rollout status deployment/school-management-microservice -n ${KUBERNETES_NAMESPACE}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
